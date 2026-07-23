@@ -1,0 +1,9 @@
+python train_cbm.py \
+  --dataset treeoflife \
+  --backbone resnet50 \
+  --concept_set data/concept_sets/treeoflife.txt \
+  --clip_cutoff 0.2 \
+  --interpretability_cutoff 0.3 \
+  --n_iters 1000 \
+  --lam 0.0007 \
+  --print

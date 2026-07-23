@@ -79,7 +79,6 @@ def save_clip_text_features(model, text, save_name, batch_size=1000):
 def save_activations(clip_name, target_name, target_layers, d_probe, 
                      concept_set, batch_size, device, pool_mode, save_dir):
     
-    
     target_save_name, clip_save_name, text_save_name = get_save_names(clip_name, target_name, 
                                                                     "{}", d_probe, concept_set, 
                                                                       pool_mode, save_dir)
@@ -90,23 +89,39 @@ def save_activations(clip_name, target_name, target_layers, d_probe,
     if _all_saved(save_names):
         return
     
-    clip_model, clip_preprocess = clip.load(clip_name, device=device)
-    
+    # --- concept-matrix encoder (was always plain CLIP; now branches on clip_name) ---
+    if clip_name == "bioclip":
+        import open_clip
+        clip_model, _, clip_preprocess = open_clip.create_model_and_transforms("ViT-B-16")
+        checkpoint = torch.load(
+            "/home/jovyan/bioclip/bioclip/open_clip_pytorch_model.bin",
+            map_location="cpu", weights_only=False,
+        )
+        state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+        state_dict = {k.replace("module.", "", 1) if k.startswith("module.") else k: v for k, v in state_dict.items()}
+        clip_model.load_state_dict(state_dict)
+        clip_model = clip_model.to(device).eval()
+        tokenizer = open_clip.get_tokenizer("ViT-B-16")
+    else:
+        clip_model, clip_preprocess = clip.load(clip_name, device=device)
+        tokenizer = clip.tokenize
+
+    # --- backbone being made interpretable (unchanged: your dataset's target model) ---
     if target_name.startswith("clip_"):
         target_model, target_preprocess = clip.load(target_name[5:], device=device)
     else:
         target_model, target_preprocess = data_utils.get_target_model(target_name, device)
+
     #setup data
     data_c = data_utils.get_data(d_probe, clip_preprocess)
     data_t = data_utils.get_data(d_probe, target_preprocess)
-
     with open(concept_set, 'r') as f: 
         words = (f.read()).split('\n')
-    text = clip.tokenize(["{}".format(word) for word in words]).to(device)
+    text = tokenizer(["{}".format(word) for word in words]).to(device)
     
     save_clip_text_features(clip_model, text, text_save_name, batch_size)
-    
     save_clip_image_features(clip_model, data_c, clip_save_name, batch_size, device)
+    
     if target_name.startswith("clip_"):
         save_clip_image_features(target_model, data_t, target_save_name, batch_size, device)
     else:
@@ -141,20 +156,20 @@ def get_similarity_from_activations(target_save_name, clip_save_name, text_save_
         return similarity
     
 def get_activation(outputs, mode):
-    '''
-    mode: how to pool activations: one of avg, max
-    for fc neurons does no pooling
-    '''
     if mode=='avg':
         def hook(model, input, output):
             if len(output.shape)==4:
                 outputs.append(output.mean(dim=[2,3]).detach().cpu())
+            elif len(output.shape)==3:
+                outputs.append(output.mean(dim=1).detach().cpu())   # average over tokens
             elif len(output.shape)==2:
                 outputs.append(output.detach().cpu())
     elif mode=='max':
         def hook(model, input, output):
             if len(output.shape)==4:
                 outputs.append(output.amax(dim=[2,3]).detach().cpu())
+            elif len(output.shape)==3:
+                outputs.append(output.amax(dim=1).detach().cpu())
             elif len(output.shape)==2:
                 outputs.append(output.detach().cpu())
     return hook
