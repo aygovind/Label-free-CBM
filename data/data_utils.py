@@ -81,21 +81,8 @@ def get_targets_only(dataset_name):
     return pil_data.targets
 
 def get_target_model(target_name, device):
-
-    if target_name == "clip_bioclip":
-        import open_clip
-        model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-16")
-        checkpoint = torch.load(
-            "/workspace/models/bioclip/open_clip_pytorch_model.bin",
-            map_location="cpu", weights_only=False,
-        )
-        state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
-        state_dict = {k.replace("module.", "", 1) if k.startswith("module.") else k: v for k, v in state_dict.items()}
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
-        assert not missing and not unexpected, (missing[:5], unexpected[:5])
-        model = model.to(device).eval()
-        target_model = lambda x: model.encode_image(x).float()
-    elif target_name.startswith("clip_"):
+    
+    if target_name.startswith("clip_"):
         target_name = target_name[5:]
         model, preprocess = clip.load(target_name, device=device)
         target_model = lambda x: model.encode_image(x).float()
@@ -124,11 +111,11 @@ def get_target_model(target_name, device):
         target_model.eval()
         preprocess = weights.transforms()
         
-    elif target_name == "clip_bioclip":
+    elif target_name == "bioclip":
         import open_clip
         bioclip_model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-16")
         checkpoint = torch.load(
-            "/workspace/models/bioclip/open_clip_pytorch_model.bin",
+            "/home/jovyan/bioclip/bioclip/open_clip_pytorch_model.bin",
             map_location="cpu", weights_only=False,
         )
         state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint

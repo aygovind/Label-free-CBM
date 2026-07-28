@@ -30,7 +30,7 @@ def save_target_activations(target_model, dataset, save_name, target_layers = ["
         hooks[target_layer] = eval(command)
     
     with torch.no_grad():
-        for images, labels in tqdm(DataLoader(dataset, batch_size, num_workers=8, pin_memory=True)): # Changed to 2 due to limited shm
+        for images, labels in tqdm(DataLoader(dataset, batch_size, num_workers=8, pin_memory=True)):
             features = target_model(images.to(device))
     
     for target_layer in target_layers:
@@ -94,7 +94,7 @@ def save_activations(clip_name, target_name, target_layers, d_probe,
         import open_clip
         clip_model, _, clip_preprocess = open_clip.create_model_and_transforms("ViT-B-16")
         checkpoint = torch.load(
-            "/workspace/models/bioclip/open_clip_pytorch_model.bin",
+            "/home/jovyan/bioclip/bioclip/open_clip_pytorch_model.bin",
             map_location="cpu", weights_only=False,
         )
         state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
@@ -107,9 +107,7 @@ def save_activations(clip_name, target_name, target_layers, d_probe,
         tokenizer = clip.tokenize
 
     # --- backbone being made interpretable (unchanged: your dataset's target model) ---
-    if target_name == "clip_bioclip":
-        target_model, target_preprocess = data_utils.get_target_model(target_name, device)
-    elif target_name.startswith("clip_"):
+    if target_name.startswith("clip_"):
         target_model, target_preprocess = clip.load(target_name[5:], device=device)
     else:
         target_model, target_preprocess = data_utils.get_target_model(target_name, device)
@@ -119,7 +117,6 @@ def save_activations(clip_name, target_name, target_layers, d_probe,
     data_t = data_utils.get_data(d_probe, target_preprocess)
     with open(concept_set, 'r') as f: 
         words = (f.read()).split('\n')
-    words = [i for i in words if i != ""]
     text = tokenizer(["{}".format(word) for word in words]).to(device)
     
     save_clip_text_features(clip_model, text, text_save_name, batch_size)

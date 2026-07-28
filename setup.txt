@@ -6,8 +6,9 @@ cd Label-free-CBM
 conda create -p ~/envs/lfcbm python=3.9 -y
 source /opt/conda/etc/profile.d/conda.sh
 conda activate ~/envs/lfcbm
-~/envs/lfcbm/bin/pip install ipykernel
-~/envs/lfcbm/bin/python -m ipykernel install --user --name lfcbm --display-name "Python (lfcbm)"
+# Register Kernel
+/workspace/envs/lfcbm/bin/pip install ipykernel
+/workspace/envs/lfcbm/bin/python -m ipykernel install --user --name lfcbm --display-name "Python (lfcbm)"
 
 pip install -r requirements.txt
 bash download_cub.sh
@@ -15,18 +16,8 @@ bash download_models.sh
 bash download_rn18_places.sh
 pip uninstall -y numpy
 pip install numpy==1.26.4
-
-RESTART
-
-cd ~/Label-free-CBM
-source /opt/conda/etc/profile.d/conda.sh
-conda activate ~/envs/lfcbm
-clear
-
-TRAIN MODEL
-
-python train_cbm.py --backbone bioclip --feature_layer visual.ln_post \
-    --dataset treeoflife --concept_set data/concept_sets/treeoflife_concepts.txt
+pip install openai
+pip install 
 
 DATASET DOWNLOAD
 
@@ -35,3 +26,24 @@ mkdir -p ~/.kaggle && chmod 600 ~/.kaggle/kaggle.json  # after placing your toke
 
 kaggle datasets download -d gpiosenka/100-bird-species
 unzip 100-bird-species.zip -d birds_data
+
+RESTART
+
+cd /workspace/Label-free-CBM
+source /opt/conda/etc/profile.d/conda.sh
+conda activate /workspace/envs/lfcbm
+clear
+
+TRAIN MODEL
+
+python train_cbm.py --backbone bioclip --feature_layer visual.ln_post \
+    --dataset treeoflife --concept_set data/concept_sets/treeoflife_concepts.txt
+
+python train_cbm.py --backbone bioclip --feature_layer visual.ln_post --clip_name bioclip \
+    --dataset birds525 --concept_set data/concept_sets/birds525_filtered.txt --print
+
+nohup python train_cbm.py --backbone clip_bioclip --clip_name bioclip --feature_layer visual.ln_post \
+  --dataset birds525 --concept_set data/concept_sets/birds525_filtered.txt \
+  --batch_size 256 --print > /workspace/train.log 2>&1 &
+tail -f /workspace/train.log
+
