@@ -29,18 +29,24 @@ def check(label, got, want):
     passed = got == want
     _results.append(("PASS" if passed else "FAIL", label))
     print("  {}  {}{}".format("PASS" if passed else "FAIL", label,
-                              "" if passed else "  (got {!r}, want {!r})".format(got, want)))
+                              "" if passed else "  (got {!r}, want {!r})".format(got, want)),
+          flush=True)
     return passed
 
 
 def ok(label):
     _results.append(("PASS", label))
-    print("  PASS  {}".format(label))
+    print("  PASS  {}".format(label), flush=True)
 
 
 def skip(label, reason):
     _results.append(("SKIP", label))
-    print("  SKIP  {}  ({})".format(label, reason))
+    print("  SKIP  {}  ({})".format(label, reason), flush=True)
+
+
+def step(message):
+    """Announce slow work before doing it, so a long pause is never mistaken for a hang."""
+    print("  ...   {}".format(message), flush=True)
 
 
 def missing_modules(*names):
@@ -95,13 +101,15 @@ def tier_config():
 # -------------------------------------------------------------- tier: backbone
 
 def tier_backbone():
-    print("\n[backbone] feature dimensions and activation cache keys")
+    print("\n[backbone] feature dimensions and activation cache keys", flush=True)
+    step("importing torch / torchvision (slow on first import)")
     absent = missing_modules("torch", "torchvision")
     if absent:
         skip("backbone tier", "missing {}".format(", ".join(absent)))
         return
 
     import torch
+    step("importing data_utils (pulls in clip, pytorchcv)")
     import data_utils
     import utils
 
@@ -118,7 +126,11 @@ def tier_backbone():
     elif missing_modules("open_clip"):
         skip("BioCLIP backbone feature dim", "missing open_clip")
     else:
+        size_mb = os.path.getsize(ckpt) / 1e6
+        step("loading BioCLIP from {} ({:.0f} MB) -- reading this off the PVC can take "
+             "a minute or two, it is not hung".format(ckpt, size_mb))
         model, preprocess = data_utils.get_target_model("bioclip", "cpu")
+        step("checkpoint loaded; running one forward pass on CPU")
         with torch.no_grad():
             feats = model(torch.randn(2, 3, 224, 224))
         check("bioclip returns ln_post features (768-d)", tuple(feats.shape), (2, 768))
