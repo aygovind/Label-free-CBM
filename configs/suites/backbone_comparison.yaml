@@ -1,10 +1,22 @@
-# The complete five-backbone comparison, for reproducing the whole set from scratch.
-# All runs share a ViT-B/16 concept space and the default lam, so the only variable is
-# the backbone. Day to day you want bioclip_sweep + backbone_baselines instead; those
-# two together produce these same five runs without recomputing anything.
+# Five-backbone comparison at fixed ViT-B/16 concept space and fixed lam, so the only
+# variable is the backbone. Run with --skip_existing; rn50_birds525 is already on disk.
+#
+# Measured cost: ~4.5h per birds525 run, dominated by GLM-SAGA. Feature extraction is
+# ~10 min per new backbone because every concept feature is already cached.
+#
+# Ordering is deliberate:
+#   1. rn50_birds525 first purely as a resume check -- it should report "already
+#      complete -- skipping" within seconds. If it starts training instead then
+#      --skip_existing is not matching, and the job should be killed before it burns
+#      hours redoing finished work.
+#   2. in21k and dino next: the two timm backbones, which have never run on real data.
+#      Any bug in TimmBackbone surfaces ~4.5h in rather than ~14h in.
+#   3. bioclip_birds525_vitb_concepts -- the BioCLIP arm of the comparison.
+#   4. clip_vitb16_birds525 last: the standard LF-CBM reference point and the
+#      best-understood of the four, so the safest run to lose to a deadline kill.
 runs:
-  - experiment: bioclip_birds525_vitb_concepts   # BioCLIP
-  - experiment: rn50_birds525                    # ImageNet ResNet-50
-  - experiment: clip_vitb16_birds525             # CLIP ViT-B/16
-  - experiment: in21k_birds525                   # supervised ImageNet-21k ViT-B/16
-  - experiment: dino_birds525                    # DINO ViT-B/16
+  - experiment: rn50_birds525                     # ImageNet ResNet-50 (done; resume check)
+  - experiment: in21k_birds525                    # supervised ImageNet-21k ViT-B/16
+  - experiment: dino_birds525                     # DINO self-supervised ViT-B/16
+  - experiment: bioclip_birds525_vitb_concepts    # BioCLIP ViT-B/16
+  - experiment: clip_vitb16_birds525              # CLIP ViT-B/16 (standard LF-CBM)

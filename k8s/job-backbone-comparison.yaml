@@ -2,22 +2,24 @@
 # disk from the first sweep are skipped instantly. One queue wait instead of two, which
 # matters: 283 nodes reported Insufficient nvidia.com/gpu when this was written.
 #
-# Measured: ~4.5h per birds525 run (GLM-SAGA dominates), 6 runs outstanding -> ~27h.
+# Measured: ~4.5h per birds525 run (GLM-SAGA dominates). rn50_birds525 is already on
+# disk and skipped, leaving 4 runs -> ~18h. The lam sweep is deferred; run the
+# all_experiments suite later to pick it up (it will skip everything done here).
 # Do NOT run concurrently with another lfcbm job: the activation cache is not
 # concurrency-safe.
 
 #
 # Requires timm in the conda env on the PVC. Preflight fails fast if it is missing.
 #
-# Submit:  kubectl apply -f k8s/job-all-experiments.yaml
-# Watch:   kubectl logs -f job/lfcbm-all-experiments
+# Submit:  kubectl apply -f k8s/job-backbone-comparison.yaml
+# Watch:   kubectl logs -f job/lfcbm-backbone-comparison
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: lfcbm-all-experiments
+  name: lfcbm-backbone-comparison
   labels:
     app: lfcbm
-    run: all-experiments
+    run: backbone-comparison
 spec:
   backoffLimit: 2                  # evictions are likely; --skip_existing makes a retry resume
   activeDeadlineSeconds: 172800    # 48h -- the 12h first attempt hit DeadlineExceeded mid-suite
@@ -26,7 +28,7 @@ spec:
     metadata:
       labels:
         app: lfcbm
-        run: all-experiments
+        run: backbone-comparison
     spec:
       restartPolicy: Never
       securityContext:
@@ -47,7 +49,7 @@ spec:
             - name: LFCBM_BIOCLIP_CKPT
               value: /workspace/models/bioclip/open_clip_pytorch_model.bin
             - name: SUITE
-              value: all_experiments
+              value: backbone_comparison
           command: ["/bin/bash", "-c"]
           args:
             - |
@@ -117,3 +119,8 @@ spec:
                       - NVIDIA-GeForce-RTX-3090
                       - NVIDIA-GeForce-RTX-4090
                       - NVIDIA-A10
+                      # added to widen the pool: both fully untainted, both fast enough.
+                      # Pascal cards (1080-Ti, TITAN-Xp) deliberately excluded -- plentiful
+                      # but no tensor cores, which would cost more than the queue wait.
+                      - NVIDIA-L4
+                      - Tesla-V100-SXM2-32GB
