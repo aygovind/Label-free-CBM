@@ -8,3 +8,5 @@ data/gpt_cache_*.json
 __pycache__/
 *.pyc
 .openai_api_key
+suite_results/
+smoke_out/

@@ -106,10 +106,10 @@ def save_activations(clip_name, target_name, target_layers, d_probe,
         clip_model, clip_preprocess = clip.load(clip_name, device=device)
         tokenizer = clip.tokenize
 
-    # --- backbone being made interpretable (unchanged: your dataset's target model) ---
-    if target_name == "clip_bioclip":
-        target_model, target_preprocess = data_utils.get_target_model(target_name, device)
-    elif target_name.startswith("clip_"):
+    # --- backbone being made interpretable ---
+    # 'bioclip' has no clip_ prefix, so it routes through get_target_model below and
+    # is saved via save_target_activations (the hook path that honors feature_layer)
+    if target_name.startswith("clip_"):
         target_model, target_preprocess = clip.load(target_name[5:], device=device)
     else:
         target_model, target_preprocess = data_utils.get_target_model(target_name, device)

@@ -1,0 +1,12 @@
+# Baseline: upstream LF-CBM setup (ImageNet ResNet-50 backbone, generic CLIP concepts).
+# Reference point for what BioCLIP actually buys on this dataset.
+dataset: birds525
+concept_set: data/concept_sets/birds525_filtered.txt
+backbone: resnet50
+clip_name: ViT-B/16
+feature_layer: layer4
+
+batch_size: 256
+clip_cutoff: 0.2
+interpretability_cutoff: 0.3
+print: true

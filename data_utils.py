@@ -12,6 +12,9 @@ DATASET_ROOTS = {
     "cub_val":"data/CUB/test"
 }
 
+BIOCLIP_CKPT = os.environ.get("LFCBM_BIOCLIP_CKPT",
+                              "/workspace/models/bioclip/open_clip_pytorch_model.bin")
+
 LABEL_FILES = {"places365":"data/categories_places365_clean.txt",
                "imagenet":"data/imagenet_classes.txt",
                "cifar10":"data/cifar10_classes.txt",
@@ -80,21 +83,47 @@ def get_targets_only(dataset_name):
     pil_data = get_data(dataset_name)
     return pil_data.targets
 
+class BioCLIPBackbone(torch.nn.Module):
+    """BioCLIP's image tower, tapped at visual.ln_post.
+
+    Returns the 768-d pre-projection features instead of the 512-d output of
+    encode_image, so the concept projection sees the true penultimate layer.
+    Kept as a Module (not a lambda) so that utils.save_target_activations can
+    resolve the `visual.ln_post` attribute path when registering its own hook.
+    """
+    def __init__(self, clip_model):
+        super().__init__()
+        self.visual = clip_model.visual
+        self._feat = {}
+        self.visual.ln_post.register_forward_hook(
+            lambda module, inp, out: self._feat.__setitem__("f", out))
+
+    def forward(self, x):
+        self.visual(x)
+        feat = self._feat["f"]
+        # current open_clip applies ln_post after pooling (2-D); older versions
+        # apply it to the full token sequence, hence the mean over tokens
+        return feat.mean(dim=1).float() if feat.dim() == 3 else feat.float()
+
+
+def load_bioclip(device):
+    """Load the BioCLIP ViT-B/16 checkpoint into an open_clip model."""
+    import open_clip
+    model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-16")
+    checkpoint = torch.load(BIOCLIP_CKPT, map_location="cpu", weights_only=False)
+    state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+    state_dict = {k.replace("module.", "", 1) if k.startswith("module.") else k: v for k, v in state_dict.items()}
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    assert not missing and not unexpected, (missing[:5], unexpected[:5])
+    return model, preprocess
+
+
 def get_target_model(target_name, device):
 
-    if target_name == "clip_bioclip":
-        import open_clip
-        model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-16")
-        checkpoint = torch.load(
-            "/workspace/models/bioclip/open_clip_pytorch_model.bin",
-            map_location="cpu", weights_only=False,
-        )
-        state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
-        state_dict = {k.replace("module.", "", 1) if k.startswith("module.") else k: v for k, v in state_dict.items()}
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
-        assert not missing and not unexpected, (missing[:5], unexpected[:5])
-        model = model.to(device).eval()
-        target_model = lambda x: model.encode_image(x).float()
+    if target_name == "bioclip":
+        model, preprocess = load_bioclip(device)
+        target_model = BioCLIPBackbone(model).to(device).eval()
+
     elif target_name.startswith("clip_"):
         target_name = target_name[5:]
         model, preprocess = clip.load(target_name, device=device)
@@ -123,32 +152,6 @@ def get_target_model(target_name, device):
         target_model = eval("models.{}(weights).to(device)".format(target_name))
         target_model.eval()
         preprocess = weights.transforms()
-        
-    elif target_name == "clip_bioclip":
-        import open_clip
-        bioclip_model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-16")
-        checkpoint = torch.load(
-            "/workspace/models/bioclip/open_clip_pytorch_model.bin",
-            map_location="cpu", weights_only=False,
-        )
-        state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
-        state_dict = {k.replace("module.", "", 1) if k.startswith("module.") else k: v for k, v in state_dict.items()}
-        bioclip_model.load_state_dict(state_dict)
-        bioclip_model = bioclip_model.to(device)
-        bioclip_model.eval()
-    
-        visual = bioclip_model.visual
-        _captured = {}
-        def _capture_hook(module, inp, out):
-            _captured["feat"] = out
-        visual.ln_post.register_forward_hook(_capture_hook)
-    
-        def target_model(x):
-            visual(x)
-            feat = _captured["feat"]
-            if feat.dim() == 3:
-                feat = feat.mean(dim=1)      # average over tokens — must match utils.py's get_activation exactly
-            return feat
         
     else:
         target_name_cap = target_name.replace("resnet", "ResNet")

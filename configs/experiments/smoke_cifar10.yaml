@@ -1,0 +1,23 @@
+# Tiny CPU config used by smoke_test.py. Not a research run -- every knob is set
+# to "finish fast", and the pruning cutoffs are negative so no concept is dropped
+# (on a few hundred images the real cutoffs would delete everything and the run
+# would crash writing an empty concepts.txt).
+dataset: cifar10
+concept_set: data/concept_sets/cifar10_filtered.txt
+backbone: resnet50
+clip_name: RN50
+feature_layer: layer4
+
+device: cpu
+batch_size: 32
+saga_batch_size: 32
+proj_batch_size: 128
+
+proj_steps: 20
+n_iters: 5
+clip_cutoff: -1.0
+interpretability_cutoff: -1.0
+
+activation_dir: smoke_out/activations
+save_dir: smoke_out/models
+print: false

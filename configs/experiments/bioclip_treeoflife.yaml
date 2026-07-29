@@ -1,0 +1,12 @@
+# BioCLIP on the 5-class coarse taxonomic split. Small and fast -- useful as a
+# real-data check before committing GPU time to birds525.
+dataset: treeoflife
+concept_set: data/concept_sets/treeoflife_concepts.txt
+backbone: bioclip
+clip_name: bioclip
+feature_layer: visual.ln_post
+
+batch_size: 256
+clip_cutoff: 0.2
+interpretability_cutoff: 0.3
+print: true

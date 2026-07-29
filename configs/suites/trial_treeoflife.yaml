@@ -1,0 +1,10 @@
+# Trial suite: exercises the whole job path -- image, conda env, PVC mounts, config
+# loading, activation caching, training, evaluation, summary -- on the smallest real
+# dataset available (400 train / 109 val images, 5 classes, 48 concepts).
+#
+# Deliberately identical to the birds525 runs in every respect except the dataset and
+# its concept set: same BioCLIP backbone tapped at visual.ln_post, same BioCLIP concept
+# encoder, same cutoffs. If this passes, swapping --suite bioclip_sweep into the Job is
+# the only change needed.
+runs:
+  - experiment: bioclip_treeoflife

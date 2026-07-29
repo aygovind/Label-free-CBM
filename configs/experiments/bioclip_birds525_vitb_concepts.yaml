@@ -1,0 +1,12 @@
+# Ablation: BioCLIP backbone, but generic CLIP defines the concept space.
+# Isolates how much the domain-tuned concept grounding contributes.
+dataset: birds525
+concept_set: data/concept_sets/birds525_filtered.txt
+backbone: bioclip
+clip_name: ViT-B/16
+feature_layer: visual.ln_post
+
+batch_size: 256
+clip_cutoff: 0.2
+interpretability_cutoff: 0.3
+print: true

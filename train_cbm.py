@@ -1,6 +1,7 @@
 import torch
 import os
 import random
+import sys
 import utils
 import data_utils
 import similarity
@@ -8,11 +9,18 @@ import argparse
 import datetime
 import json
 
+import config as config_lib
+
 from glm_saga.elasticnet import IndexedTensorDataset, glm_saga
 from torch.utils.data import DataLoader, TensorDataset
 
 parser = argparse.ArgumentParser(description='Settings for creating CBM')
 
+parser.add_argument("--config", type=str, default=None,
+                    help="name or path of an experiment config in configs/experiments/. "
+                         "Explicit command-line flags override the config file.")
+parser.add_argument("--run_name", type=str, default=None,
+                    help="output directory name under --save_dir. Defaults to a timestamp.")
 
 parser.add_argument("--dataset", type=str, default="cifar10")
 parser.add_argument("--concept_set", type=str, default=None, 
@@ -37,9 +45,8 @@ parser.add_argument("--n_iters", type=int, default=1000, help="How many iteratio
 parser.add_argument("--print", action='store_true', help="Print all concepts being deleted in this stage")
 
 def train_cbm_and_save(args):
-    
-    if not os.path.exists(args.save_dir):
-        os.mkdir(args.save_dir)
+
+    os.makedirs(args.save_dir, exist_ok=True)
     if args.concept_set==None:
         args.concept_set = "data/concept_sets/{}_filtered.txt".format(args.dataset)
         
@@ -216,8 +223,10 @@ def train_cbm_and_save(args):
     W_g = output_proj['path'][0]['weight']
     b_g = output_proj['path'][0]['bias']
     
-    save_name = "{}/{}_cbm_{}".format(args.save_dir, args.dataset, datetime.datetime.now().strftime("%Y_%m_%d_%H_%M"))
-    os.mkdir(save_name)
+    run_name = getattr(args, "run_name", None) or "{}_cbm_{}".format(
+        args.dataset, datetime.datetime.now().strftime("%Y_%m_%d_%H_%M"))
+    save_name = os.path.join(args.save_dir, run_name)
+    os.makedirs(save_name, exist_ok=True)
     torch.save(train_mean, os.path.join(save_name, "proj_mean.pt"))
     torch.save(train_std, os.path.join(save_name, "proj_std.pt"))
     torch.save(W_c, os.path.join(save_name ,"W_c.pt"))
@@ -241,7 +250,12 @@ def train_cbm_and_save(args):
         total = W_g.numel()
         out_dict['sparsity'] = {"Non-zero weights":nnz, "Total weights":total, "Percentage non-zero":nnz/total}
         json.dump(out_dict, f, indent=2)
-    
+
+    return save_name
+
 if __name__=='__main__':
     args = parser.parse_args()
-    train_cbm_and_save(args)
+    if args.config:
+        args = config_lib.apply_to_args(args, sys.argv[1:])
+    save_name = train_cbm_and_save(args)
+    print("Saved to {}".format(save_name))

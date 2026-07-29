@@ -1,0 +1,15 @@
+# BioCLIP backbone tapped at visual.ln_post (768-d), BioCLIP concept space.
+# The primary configuration: an interpretable BioCLIP.
+dataset: birds525
+concept_set: data/concept_sets/birds525_filtered.txt
+backbone: bioclip
+clip_name: bioclip
+feature_layer: visual.ln_post
+
+batch_size: 256
+
+# defaults prune too aggressively on fine-grained biological concepts
+clip_cutoff: 0.2
+interpretability_cutoff: 0.3
+
+print: true

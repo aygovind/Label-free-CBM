@@ -1,0 +1,13 @@
+# One Kubernetes Job runs this suite top to bottom on a single GPU allocation.
+# Runs sharing a backbone reuse the activation cache, so ordering matters:
+# put the cheap sanity run first and group same-backbone runs together.
+runs:
+  - experiment: bioclip_treeoflife
+
+  - experiment: rn50_birds525
+
+  - experiment: bioclip_birds525
+    grid:
+      lam: [0.0007, 0.002, 0.005]
+
+  - experiment: bioclip_birds525_vitb_concepts

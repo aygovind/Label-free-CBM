@@ -1,0 +1,30 @@
+# Defaults for every run, and the authoritative list of legal config keys.
+# Values mirror the argparse defaults in train_cbm.py; experiments override what they need.
+
+# --- what is being trained ---
+dataset: cifar10
+concept_set: null            # null -> data/concept_sets/<dataset>_filtered.txt
+backbone: clip_RN50          # bioclip, clip_RN50, resnet50, resnet18_places, ...
+clip_name: ViT-B/16          # model defining the concept space
+feature_layer: layer4        # backbone layer to tap; ignored for clip_-prefixed backbones
+
+# --- compute ---
+device: cuda
+batch_size: 512              # used when saving backbone/CLIP activations
+saga_batch_size: 256         # used when fitting the final layer
+proj_batch_size: 50000       # used when learning the projection layer
+
+# --- concept pruning ---
+clip_cutoff: 0.25            # drop concepts with lower mean top-5 CLIP activation
+interpretability_cutoff: 0.45  # drop concepts with lower projection similarity
+
+# --- optimisation ---
+proj_steps: 1000             # steps for the projection layer
+lam: 0.0007                  # final-layer sparsity; higher -> sparser
+n_iters: 1000                # GLM-SAGA iterations
+
+# --- io ---
+activation_dir: saved_activations
+save_dir: saved_models
+run_name: null               # null -> derived from experiment name + overrides
+print: false                 # log every concept as it is pruned
