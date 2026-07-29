@@ -1,0 +1,31 @@
+# Every experiment, in one job. Intended to be run with --skip_existing so that runs
+# already on disk cost nothing -- this is the suite to resubmit after a deadline kill
+# or eviction rather than picking runs by hand.
+#
+# Measured cost: GLM-SAGA is ~4.5h per birds525 run and dominates everything else;
+# feature extraction is ~25 min total. So the wall clock is roughly
+# 4.5h x (number of runs not yet on disk).
+#
+# Ordered by research value, not by cost, because a deadline kill truncates the tail:
+# the four runs that complete the five-backbone comparison come first, so a partial
+# job still yields a publishable result. The lam sweep is a separate axis and goes last.
+runs:
+  # --- already complete as of the first sweep; skipped instantly ---
+  - experiment: bioclip_treeoflife
+  - experiment: rn50_birds525
+  # lam stated explicitly so run_name becomes bioclip_birds525__lam0p0007, matching what
+  # bioclip_sweep already produced. Written bare, run_name would be "bioclip_birds525",
+  # which --skip_existing would not recognise -- silently redoing a 4.5h run.
+  - experiment: bioclip_birds525
+    lam: 0.0007
+
+  # --- completes the five-backbone comparison at fixed ViT-B/16 concept space ---
+  - experiment: bioclip_birds525_vitb_concepts
+  - experiment: clip_vitb16_birds525
+  - experiment: in21k_birds525
+  - experiment: dino_birds525
+
+  # --- sparsity axis: accuracy vs interpretability trade-off ---
+  - experiment: bioclip_birds525
+    grid:
+      lam: [0.002, 0.005]

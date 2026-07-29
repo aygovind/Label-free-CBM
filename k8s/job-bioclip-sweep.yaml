@@ -1,0 +1,114 @@
+# Full experiment sweep: 6 runs, sequential, one GPU allocation.
+# Same manifest as the treeoflife trial except SUITE, the deadline, and the name.
+#
+# Runs (see configs/suites/bioclip_sweep.yaml):
+#   1. bioclip_treeoflife              fast gate -- fails early if something is broken
+#   2. rn50_birds525                   upstream baseline
+#   3. bioclip_birds525  lam=0.0007    primary
+#   4. bioclip_birds525  lam=0.002
+#   5. bioclip_birds525  lam=0.005
+#   6. bioclip_birds525_vitb_concepts  concept-encoder ablation
+#
+# Submit:  kubectl apply -f k8s/job-bioclip-sweep.yaml
+# Watch:   kubectl logs -f job/lfcbm-bioclip-sweep
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lfcbm-bioclip-sweep
+  labels:
+    app: lfcbm
+    run: bioclip-sweep
+spec:
+  backoffLimit: 2                  # evictions are likely; --skip_existing makes a retry resume
+  activeDeadlineSeconds: 172800    # 48h -- the 12h first attempt hit DeadlineExceeded mid-suite
+  ttlSecondsAfterFinished: 172800 # keep logs for 48h
+  template:
+    metadata:
+      labels:
+        app: lfcbm
+        run: bioclip-sweep
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 100
+        fsGroup: 100
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: trainer
+          image: gitlab-registry.nrp-nautilus.io/nrp/scientific-images/python
+          env:
+            - name: HF_HOME
+              value: /workspace/.cache/huggingface
+            - name: TORCH_HOME
+              value: /workspace/.cache/torch
+            - name: PIP_CACHE_DIR
+              value: /workspace/.cache/pip
+            - name: LFCBM_BIOCLIP_CKPT
+              value: /workspace/models/bioclip/open_clip_pytorch_model.bin
+            - name: SUITE
+              value: bioclip_sweep
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -eo pipefail
+
+              echo "===== environment ====="
+              nvidia-smi
+              source /opt/conda/etc/profile.d/conda.sh
+              conda activate /workspace/envs/lfcbm
+              cd /workspace/Label-free-CBM
+              python -c "import torch; print('torch', torch.__version__, '| cuda available:', torch.cuda.is_available())"
+
+              echo "===== code version ====="
+              git rev-parse HEAD
+              git status --short || true
+
+              echo "===== preflight ====="
+              test -f "$LFCBM_BIOCLIP_CKPT" \
+                || { echo "FATAL: no BioCLIP checkpoint at $LFCBM_BIOCLIP_CKPT"; exit 1; }
+              for d in data/treeoflife/train data/birds525/train data/birds525/val; do
+                test -d "$d" || { echo "FATAL: missing $d"; exit 1; }
+              done
+              echo "birds525 train images: $(find data/birds525/train -name '*.jpg' | wc -l)"
+              echo "PVC free space:"; df -h /workspace | tail -1
+              python smoke_test.py --tier config
+
+              echo "===== suite: $SUITE ====="
+              python run_suite.py --suite "$SUITE" --skip_existing
+          volumeMounts:
+            - name: ml-storage
+              mountPath: /workspace
+            - name: dshm
+              mountPath: /dev/shm
+          resources:
+            requests:
+              cpu: "4"
+              memory: "12Gi"
+              ephemeral-storage: "10Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4600m"
+              memory: "14Gi"
+              ephemeral-storage: "12Gi"
+              nvidia.com/gpu: "1"
+      volumes:
+        - name: ml-storage
+          persistentVolumeClaim:
+            claimName: ayush-workspace
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 6Gi
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-GeForce-RTX-2080-Ti
+                      - NVIDIA-GeForce-RTX-3090
+                      - NVIDIA-GeForce-RTX-4090
+                      - NVIDIA-A10

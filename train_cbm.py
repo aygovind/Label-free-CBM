@@ -238,6 +238,9 @@ def train_cbm_and_save(args):
         for concept in concepts[1:]:
             f.write('\n'+concept)
     
+    with open(os.path.join(save_name, "classes.txt"), 'w') as f:
+        f.write("\n".join(classes))
+
     with open(os.path.join(save_name, "args.txt"), 'w') as f:
         json.dump(args.__dict__, f, indent=2)
     

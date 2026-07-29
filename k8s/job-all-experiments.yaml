@@ -1,0 +1,119 @@
+# Every remaining experiment in one job. Uses --skip_existing, so the runs already on
+# disk from the first sweep are skipped instantly. One queue wait instead of two, which
+# matters: 283 nodes reported Insufficient nvidia.com/gpu when this was written.
+#
+# Measured: ~4.5h per birds525 run (GLM-SAGA dominates), 6 runs outstanding -> ~27h.
+# Do NOT run concurrently with another lfcbm job: the activation cache is not
+# concurrency-safe.
+
+#
+# Requires timm in the conda env on the PVC. Preflight fails fast if it is missing.
+#
+# Submit:  kubectl apply -f k8s/job-all-experiments.yaml
+# Watch:   kubectl logs -f job/lfcbm-all-experiments
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lfcbm-all-experiments
+  labels:
+    app: lfcbm
+    run: all-experiments
+spec:
+  backoffLimit: 2                  # evictions are likely; --skip_existing makes a retry resume
+  activeDeadlineSeconds: 172800    # 48h -- the 12h first attempt hit DeadlineExceeded mid-suite
+  ttlSecondsAfterFinished: 172800
+  template:
+    metadata:
+      labels:
+        app: lfcbm
+        run: all-experiments
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 100
+        fsGroup: 100
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: trainer
+          image: gitlab-registry.nrp-nautilus.io/nrp/scientific-images/python
+          env:
+            - name: HF_HOME
+              value: /workspace/.cache/huggingface
+            - name: TORCH_HOME
+              value: /workspace/.cache/torch
+            - name: PIP_CACHE_DIR
+              value: /workspace/.cache/pip
+            - name: LFCBM_BIOCLIP_CKPT
+              value: /workspace/models/bioclip/open_clip_pytorch_model.bin
+            - name: SUITE
+              value: all_experiments
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -eo pipefail
+
+              echo "===== environment ====="
+              nvidia-smi
+              source /opt/conda/etc/profile.d/conda.sh
+              conda activate /workspace/envs/lfcbm
+              cd /workspace/Label-free-CBM
+              python -c "import torch; print('torch', torch.__version__, '| cuda available:', torch.cuda.is_available())"
+
+              echo "===== code version ====="
+              git rev-parse HEAD
+              git status --short || true
+
+              echo "===== preflight ====="
+              python -c "import timm; print('timm', timm.__version__)" \
+                || { echo "FATAL: timm not installed. Fix with:"; \
+                     echo "  conda activate /workspace/envs/lfcbm && pip install timm"; exit 1; }
+              for d in data/birds525/train data/birds525/val; do
+                test -d "$d" || { echo "FATAL: missing $d"; exit 1; }
+              done
+              echo "birds525 train images: $(find data/birds525/train -name '*.jpg' | wc -l)"
+              echo "PVC free space:"; df -h /workspace | tail -1
+
+              # gate: config checks, then confirm every new backbone loads at 768-d
+              # before committing hours of GPU time to them
+              python smoke_test.py --tier config
+              python smoke_test.py --tier backbone
+
+              echo "===== suite: $SUITE ====="
+              python run_suite.py --suite "$SUITE" --skip_existing
+          volumeMounts:
+            - name: ml-storage
+              mountPath: /workspace
+            - name: dshm
+              mountPath: /dev/shm
+          resources:
+            requests:
+              cpu: "4"
+              memory: "12Gi"
+              ephemeral-storage: "10Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4600m"
+              memory: "14Gi"
+              ephemeral-storage: "12Gi"
+              nvidia.com/gpu: "1"
+      volumes:
+        - name: ml-storage
+          persistentVolumeClaim:
+            claimName: ayush-workspace
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 6Gi
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-GeForce-RTX-2080-Ti
+                      - NVIDIA-GeForce-RTX-3090
+                      - NVIDIA-GeForce-RTX-4090
+                      - NVIDIA-A10

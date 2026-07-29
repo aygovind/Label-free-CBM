@@ -181,7 +181,13 @@ def get_activation(outputs, mode):
 def get_save_names(clip_name, target_name, target_layer, d_probe, concept_set, pool_mode, save_dir):
     
     if target_name.startswith("clip_"):
-        target_save_name = "{}/{}_{}.pt".format(save_dir, d_probe, target_name.replace('/', ''))
+        # the "backbone_" marker keeps this distinct from clip_save_name below: without it
+        # --backbone clip_X --clip_name X renders both to <d_probe>_clip_X.pt, the CLIP pass
+        # writes first, and the backbone pass is skipped by the os.path.exists guard in
+        # save_clip_image_features -- training then silently uses CLIP features as backbone
+        # features. Non-clip_ backbones are unaffected (their key already has the layer name).
+        target_save_name = "{}/{}_backbone_{}.pt".format(save_dir, d_probe,
+                                                         target_name.replace('/', ''))
     else:
         target_save_name = "{}/{}_{}_{}{}.pt".format(save_dir, d_probe, target_name, target_layer,
                                                  PM_SUFFIX[pool_mode])

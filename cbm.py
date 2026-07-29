@@ -8,7 +8,9 @@ class CBM_model(torch.nn.Module):
         super().__init__()
         model, _ = data_utils.get_target_model(backbone_name, device)
         #remove final fully connected layer
-        if "clip" in backbone_name:
+        if isinstance(model, (data_utils.BioCLIPBackbone, data_utils.TimmBackbone)):
+            self.backbone = model   # wrapper already returns the pooled feature
+        elif "clip" in backbone_name:
             self.backbone = model
         elif "cub" in backbone_name:
             self.backbone = lambda x: model.features(x)
@@ -38,7 +40,9 @@ class standard_model(torch.nn.Module):
         super().__init__()
         model, _ = data_utils.get_target_model(backbone_name, device)
         #remove final fully connected layer
-        if "clip" in backbone_name:
+        if isinstance(model, (data_utils.BioCLIPBackbone, data_utils.TimmBackbone)):
+            self.backbone = model   # wrapper already returns the pooled feature
+        elif "clip" in backbone_name:
             self.backbone = model
         elif "cub" in backbone_name:
             self.backbone = lambda x: model.features(x)

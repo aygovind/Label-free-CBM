@@ -106,6 +106,52 @@ class BioCLIPBackbone(torch.nn.Module):
         return feat.mean(dim=1).float() if feat.dim() == 3 else feat.float()
 
 
+#  timm backbones used as baselines in the BioCLIP paper: same ViT-B/16 architecture
+#  as BioCLIP, different pretraining objective, so they isolate pretraining from scale.
+TIMM_BACKBONES = {
+    "vit_in21k":   "vit_base_patch16_224.augreg_in21k",  # supervised ImageNet-21k
+    "dino_vitb16": "vit_base_patch16_224.dino",          # DINO self-supervised
+}
+
+
+class TimmBackbone(torch.nn.Module):
+    """A timm vision model exposed as a feature extractor.
+
+    `self.out` is an Identity whose output is the final pooled feature, so hooking it
+    (--feature_layer out) hands save_target_activations an already-2-D tensor. That
+    keeps the pooling decision here instead of in utils.get_activation, which would
+    otherwise mean-pool ViT tokens and silently discard the CLS token.
+    """
+    def __init__(self, model, pool="cls"):
+        super().__init__()
+        self.model = model
+        self.pool = pool
+        self.out = torch.nn.Identity()
+
+    def forward(self, x):
+        feats = self.model.forward_features(x)
+        if feats.dim() == 3:                                  # (B, tokens, D)
+            feats = feats[:, 0] if self.pool == "cls" else feats.mean(dim=1)
+        elif feats.dim() == 4:                                # (B, D, H, W)
+            feats = feats.mean(dim=[2, 3])
+        return self.out(feats.float())
+
+
+def load_timm_backbone(target_name, device, pool="cls"):
+    """Load a timm backbone plus the preprocessing that model was trained with.
+
+    num_classes=0 drops the classifier head (in21k's is 21843-wide). The transform
+    comes from the model's own data config -- augreg_in21k and DINO use different
+    normalisation, so a shared ImageNet transform would be wrong for one of them.
+    """
+    import timm
+    model = timm.create_model(TIMM_BACKBONES[target_name], pretrained=True, num_classes=0)
+    model = model.eval()
+    cfg = timm.data.resolve_data_config({}, model=model)
+    preprocess = timm.data.create_transform(**cfg)
+    return TimmBackbone(model, pool=pool).to(device).eval(), preprocess
+
+
 def load_bioclip(device):
     """Load the BioCLIP ViT-B/16 checkpoint into an open_clip model."""
     import open_clip
@@ -123,6 +169,9 @@ def get_target_model(target_name, device):
     if target_name == "bioclip":
         model, preprocess = load_bioclip(device)
         target_model = BioCLIPBackbone(model).to(device).eval()
+
+    elif target_name in TIMM_BACKBONES:
+        target_model, preprocess = load_timm_backbone(target_name, device)
 
     elif target_name.startswith("clip_"):
         target_name = target_name[5:]

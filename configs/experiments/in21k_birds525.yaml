@@ -1,0 +1,16 @@
+# BioCLIP-paper baseline: ViT-B/16 supervised on ImageNet-21k.
+#
+# Concept space is ViT-B/16 to match rn50_birds525, clip_vitb16_birds525, dino_birds525
+# and bioclip_birds525_vitb_concepts -- with the concept encoder held fixed across all
+# five, accuracy differences are attributable to the backbone alone. IN21k has no text
+# tower of its own, so it has to borrow one regardless.
+dataset: birds525
+concept_set: data/concept_sets/birds525_filtered.txt
+backbone: vit_in21k
+clip_name: ViT-B/16
+feature_layer: out           # the Identity in TimmBackbone; emits the pooled CLS feature
+
+batch_size: 256
+clip_cutoff: 0.2
+interpretability_cutoff: 0.3
+print: true

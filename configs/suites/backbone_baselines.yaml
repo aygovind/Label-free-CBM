@@ -1,0 +1,12 @@
+# The three backbones not covered by bioclip_sweep, all with a ViT-B/16 concept space.
+#
+# Run this AFTER bioclip_sweep finishes: that sweep computes the ViT-B/16 concept and
+# text features for birds525 (via rn50_birds525), which all three runs here reuse. Each
+# run then only needs its own backbone pass plus a GLM solve.
+#
+# Together with rn50_birds525 and bioclip_birds525_vitb_concepts from bioclip_sweep,
+# this completes a five-backbone comparison at fixed concept space and fixed lam.
+runs:
+  - experiment: clip_vitb16_birds525   # standard LF-CBM recipe: CLIP backbone + CLIP concepts
+  - experiment: in21k_birds525         # supervised ImageNet-21k
+  - experiment: dino_birds525          # DINO self-supervised

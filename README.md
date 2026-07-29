@@ -11,7 +11,8 @@ concepts that are weakly activated or poorly aligned, then fits a sparse linear 
 concepts to classes.
 
 **What this fork adds over upstream**
-- BioCLIP as a backbone (`clip_bioclip`) and as a concept encoder (`--clip_name bioclip`)
+- BioCLIP as a backbone (`--backbone bioclip`) and as a concept encoder (`--clip_name bioclip`)
+- `vit_in21k` and `dino_vitb16` backbones (the BioCLIP paper's ViT-B/16 baselines, via `timm`)
 - Two new datasets: `birds525` (Kaggle BIRDS 525 SPECIES) and `treeoflife` (5 coarse taxa)
 - `download_assets.ipynb` — one-shot fetch and layout of the checkpoint and datasets
 - `parquet_to_imagefolder.py` — converts the HuggingFace parquet build of BIRDS 525 to ImageFolder
@@ -125,9 +126,20 @@ For fine-grained biological data the default cutoffs prune too aggressively; `--
 --interpretability_cutoff 0.3` is a reasonable starting point (see `commands.txt`).
 
 **Activation caching.** The first run writes backbone and CLIP features to `--activation_dir`
-and later runs reuse them, keyed by `(dataset, backbone, clip_name, concept_set, layer)`. This
-is the slow part of training. It is also *not* concurrency-safe — two runs sharing a key will
-race on the same files, so do not run them in parallel against one cache.
+and later runs reuse them, keyed by `(dataset, backbone, clip_name, concept_set, layer)`. It is
+*not* concurrency-safe — two runs sharing a key will race on the same files, so do not run them
+in parallel against one cache.
+
+**Where the time actually goes.** Measured on birds525 (84k train images, 2011 concepts, 525
+classes) on an RTX 2080 Ti:
+
+| Stage | Time |
+|---|---|
+| Feature extraction, all encoders, train + val | **~25 min total** |
+| GLM-SAGA final layer, `n_iters: 1000` | **~4.5 h per run** |
+
+The solver dominates by roughly 12×, so caching activations saves far less than it appears to —
+budget cluster time per *run*, not per dataset. `--n_iters` is the knob that controls cost.
 
 ### Outputs
 
@@ -139,8 +151,10 @@ Each run writes `saved_models/<dataset>_cbm_<timestamp>/`:
 | `W_g.pt`, `b_g.pt` | Sparse final layer (concepts → classes) |
 | `proj_mean.pt`, `proj_std.pt` | Concept-activation normalization statistics |
 | `concepts.txt` | Surviving concepts after both pruning stages |
+| `classes.txt` | Class names in final-layer output order |
 | `args.txt` | Full argument dump for the run |
 | `metrics.txt` | Accuracy, loss, and final-layer sparsity |
+| `eval_metrics.json` | Written by `evaluate_cbm.py` / `run_suite.py`, not by training |
 
 ## Configs and suites
 
@@ -162,6 +176,29 @@ Shipped experiments:
 | `bioclip_birds525_vitb_concepts` | Ablation — same backbone, generic CLIP concept space |
 | `rn50_birds525` | Baseline — upstream setup (ImageNet ResNet-50 + generic CLIP) |
 | `bioclip_treeoflife` | Small/fast real-data check before spending GPU time on birds525 |
+| `clip_vitb16_birds525` | Standard LF-CBM recipe — CLIP ViT-B/16 backbone + CLIP concepts |
+| `in21k_birds525` | BioCLIP-paper baseline — ViT-B/16 supervised on ImageNet-21k |
+| `dino_birds525` | BioCLIP-paper baseline — ViT-B/16 with DINO self-supervision |
+
+### The backbone comparison
+
+Five configs share a **ViT-B/16 concept space** and the default `lam`, so the only
+variable is the backbone:
+
+| Config | Backbone | Pretraining |
+|---|---|---|
+| `bioclip_birds525_vitb_concepts` | BioCLIP ViT-B/16 | TreeOfLife-10M, contrastive |
+| `clip_vitb16_birds525` | CLIP ViT-B/16 | WIT-400M, contrastive |
+| `in21k_birds525` | ViT-B/16 | ImageNet-21k, supervised |
+| `dino_birds525` | ViT-B/16 | ImageNet, self-supervised |
+| `rn50_birds525` | ResNet-50 | ImageNet, supervised |
+
+The first four are all ViT-B/16, so those comparisons isolate pretraining from
+architecture; `rn50_birds525` also changes architecture and is the upstream reference.
+
+`bioclip_birds525` is **not** in this set — it uses a BioCLIP concept space, so it
+differs on two axes at once. Compare it against `bioclip_birds525_vitb_concepts` to
+isolate the effect of the concept encoder, and against the `lam` grid for sparsity.
 
 A **suite** is what a cluster job runs: many trainings and evaluations in sequence on one GPU
 allocation, one log, one summary. A `grid` sweeps a parameter without needing a file per point.
@@ -201,10 +238,30 @@ Reports validation accuracy, surviving concept count, and final-layer sparsity, 
 `eval_metrics.json` into the run directory. `run_suite.py` calls this automatically after each
 training run.
 
-For anything visual, `evaluate_cbm.ipynb` (upstream) and `evaluate_my_cbm.ipynb` (this fork) load
-a run directory via `cbm.load_cbm()` and add per-decision concept contribution barplots and
-final-layer weight inspection. `concept_ablation.ipynb` and the notebooks under `experiments/`
-cover concept ablation, manual weight editing, and intervention.
+For anything visual, use **`evaluate_my_cbm.ipynb`**. It is a thin driver over
+`cbm_analysis.py`, so switching models means editing one line:
+
+```python
+import cbm_analysis as ca
+
+run = ca.load_run("saved_models/bioclip_birds525__lam0p0007")   # the only line to change
+res = ca.evaluate(run)
+
+ca.compare(ca.find_runs())                    # accuracy + sparsity table across all runs
+ca.plot_wrong_predictions(run, res, n=5)      # misclassifications + what drove them
+ca.explain_example(run, idx=20)               # the paper's per-decision bar plot
+ca.sankey(run, "Felidae", "Canidae")          # concept -> class flows (needs plotly)
+ca.concept_heatmap(run, res)                  # dataset-level concept activity
+```
+
+`load_run` validates that the directory is complete and recovers class names from
+`classes.txt`, falling back to the dataset label file for runs trained before that file
+existed. Image de-normalization is read out of each backbone's own preprocessing
+pipeline, so displayed images are correct for CLIP, BioCLIP, `augreg_in21k`, and DINO
+alike rather than assuming ImageNet constants.
+
+`evaluate_cbm.ipynb` (upstream), `concept_ablation.ipynb`, and the notebooks under
+`experiments/` cover concept ablation, manual weight editing, and intervention.
 
 Notebooks that are no longer part of the active pipeline live in [`archive/`](archive/README.md).
 
@@ -318,22 +375,15 @@ is lost on delete.
 
 ## Known issues
 
-**1. Cache-name collisions are still possible in general.** `utils.get_save_names` builds the
-backbone cache as `<d_probe>_<backbone>.pt` and the CLIP cache as `<d_probe>_clip_<clip_name>.pt`.
-Any `clip_`-prefixed backbone whose suffix equals `--clip_name` renders both to the same path —
-the CLIP features win, and the backbone pass is silently skipped by the `if os.path.exists(...)`
-guard in `save_clip_image_features`. The `bioclip` backbone is not affected (its cache key
-includes the layer name), but e.g. `--backbone clip_RN50 --clip_name RN50` would be.
-
-**2. Hardcoded checkpoint path in the concept encoder.** The backbone now reads
+**1. Hardcoded checkpoint path in the concept encoder.** The backbone now reads
 `LFCBM_BIOCLIP_CKPT` (defaulting to `/workspace/models/bioclip/open_clip_pytorch_model.bin`), but
 `utils.save_activations` still hardcodes that path for the BioCLIP *concept* encoder.
 `DATASET_ROOTS` also uses paths relative to the repo root.
 
-**3. `num_workers=8` is hardcoded** in `utils.py` DataLoaders. The GPU pod requests 6 Gi of
+**2. `num_workers=8` is hardcoded** in `utils.py` DataLoaders. The GPU pod requests 6 Gi of
 `/dev/shm`; lower this if you hit shared-memory errors.
 
-**4. Concept encoder and backbone are the same model** under the default config
+**3. Concept encoder and backbone are the same model** under the default config
 (`--backbone bioclip --clip_name bioclip`). This is intended — the point is to make BioCLIP
 itself interpretable — but it means `W_c` can partly recover the concept text embeddings
 directly. A `--clip_name ViT-B/16` ablation quantifies how much the domain-tuned concept

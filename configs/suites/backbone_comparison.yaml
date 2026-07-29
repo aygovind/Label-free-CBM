@@ -1,0 +1,10 @@
+# The complete five-backbone comparison, for reproducing the whole set from scratch.
+# All runs share a ViT-B/16 concept space and the default lam, so the only variable is
+# the backbone. Day to day you want bioclip_sweep + backbone_baselines instead; those
+# two together produce these same five runs without recomputing anything.
+runs:
+  - experiment: bioclip_birds525_vitb_concepts   # BioCLIP
+  - experiment: rn50_birds525                    # ImageNet ResNet-50
+  - experiment: clip_vitb16_birds525             # CLIP ViT-B/16
+  - experiment: in21k_birds525                   # supervised ImageNet-21k ViT-B/16
+  - experiment: dino_birds525                    # DINO ViT-B/16

@@ -1,0 +1,14 @@
+# BioCLIP-paper baseline: ViT-B/16 trained with DINO (self-supervised).
+#
+# Same architecture and concept space as in21k_birds525, so the pair separates
+# supervised from self-supervised pretraining at fixed capacity.
+dataset: birds525
+concept_set: data/concept_sets/birds525_filtered.txt
+backbone: dino_vitb16
+clip_name: ViT-B/16
+feature_layer: out
+
+batch_size: 256
+clip_cutoff: 0.2
+interpretability_cutoff: 0.3
+print: true

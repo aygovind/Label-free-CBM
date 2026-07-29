@@ -116,9 +116,28 @@ def tier_backbone():
     # cache keys must differ per (backbone, clip_name, layer) or one silently
     # overwrites the other -- this is the collision that made bioclip alias CLIP
     for backbone, clip_name, layer in [("bioclip", "bioclip", "visual.ln_post"),
-                                       ("resnet50", "RN50", "layer4")]:
+                                       ("resnet50", "RN50", "layer4"),
+                                       ("vit_in21k", "bioclip", "out"),
+                                       ("dino_vitb16", "bioclip", "out"),
+                                       ("clip_ViT-B/16", "ViT-B/16", "unused"),
+                                       ("clip_RN50", "RN50", "unused")]:
         t, c, _ = utils.get_save_names(clip_name, backbone, layer, "d", "cs.txt", "avg", "A")
         check("cache keys distinct for {}/{}".format(backbone, clip_name), t == c, False)
+
+    # timm baselines: confirm the feature dim and that --feature_layer out is hookable
+    if missing_modules("timm"):
+        skip("timm backbone feature dims", "missing timm (pip install timm)")
+    else:
+        for name in sorted(data_utils.TIMM_BACKBONES):
+            step("loading {} ({}) -- downloads weights on first run".format(
+                name, data_utils.TIMM_BACKBONES[name]))
+            model, preprocess = data_utils.get_target_model(name, "cpu")
+            with torch.no_grad():
+                feats = model(torch.randn(2, 3, 224, 224))
+            check("{} returns 768-d features".format(name), tuple(feats.shape), (2, 768))
+            check("{} exposes .out for the activation hook".format(name),
+                  hasattr(model, "out"), True)
+            check("{} returns its own preprocess".format(name), preprocess is not None, True)
 
     ckpt = data_utils.BIOCLIP_CKPT
     if not os.path.exists(ckpt):
