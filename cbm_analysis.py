@@ -112,20 +112,36 @@ def get_data(run, split="val", raw=False):
 class Results:
     """Per-example predictions and concept activations, in dataset order."""
 
-    def __init__(self, run, split, preds, labels, concept_acts):
+    def __init__(self, run, split, preds, labels, concept_acts, logits=None):
         self.run = run
         self.split = split
         self.preds = preds
         self.labels = labels
         self.concept_acts = concept_acts
+        self.logits = logits
 
     @property
     def accuracy(self):
         return (self.preds == self.labels).float().mean().item()
 
     @property
+    def correct(self):
+        return self.preds == self.labels
+
+    @property
     def wrong_indices(self):
         return (self.preds != self.labels).nonzero(as_tuple=True)[0]
+
+    @property
+    def confidence(self):
+        """Softmax probability of the predicted class, per example.
+
+        Ranking by this is what separates "the model was sure and right" from
+        "sure and wrong" -- the second group is where the interesting failures are.
+        """
+        if self.logits is None:
+            raise RuntimeError("no logits stored; re-run evaluate() to populate them")
+        return torch.softmax(self.logits, dim=1).max(dim=1).values
 
     def __repr__(self):
         return "<Results {} {} acc={:.4f} n={}>".format(
@@ -138,15 +154,17 @@ def evaluate(run, split="val", batch_size=256, num_workers=4):
     loader = DataLoader(data, batch_size=batch_size, shuffle=False,
                         num_workers=num_workers, pin_memory=True)
 
-    preds, labels, acts = [], [], []
+    preds, labels, acts, all_logits = [], [], [], []
     with torch.no_grad():
         for images, y in loader:
             logits, concept_act = run.model(images.to(run.device))
             preds.append(logits.argmax(dim=1).cpu())
             labels.append(y)
             acts.append(concept_act.cpu())
+            all_logits.append(logits.cpu())
 
-    return Results(run, split, torch.cat(preds), torch.cat(labels), torch.cat(acts))
+    return Results(run, split, torch.cat(preds), torch.cat(labels),
+                   torch.cat(acts), torch.cat(all_logits))
 
 
 def summarize(run, results=None, split="val"):
@@ -374,3 +392,369 @@ def concept_heatmap(run, results, n_examples=30, n_concepts=20):
     plt.title("{} -- most active concepts".format(run.name))
     plt.tight_layout()
     plt.show()
+
+
+# --------------------------------------------------------------- static sankey
+
+def _save_fig(fig, save_path, dpi=150):
+    """Write a figure, creating the parent directory so notebook paths just work."""
+    parent = os.path.dirname(save_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
+    print("saved", save_path)
+
+
+def _flow_path(x0, x1, top0, bot0, top1, bot1):
+    """Cubic-Bezier ribbon joining a slice of a left node to a slice of a right one."""
+    from matplotlib.path import Path
+    mid = (x0 + x1) / 2.0
+    verts = [(x0, top0),
+             (mid, top0), (mid, top1), (x1, top1),
+             (x1, bot1),
+             (mid, bot1), (mid, bot0), (x0, bot0),
+             (x0, top0)]
+    codes = [Path.MOVETO,
+             Path.CURVE4, Path.CURVE4, Path.CURVE4,
+             Path.LINETO,
+             Path.CURVE4, Path.CURVE4, Path.CURVE4,
+             Path.CLOSEPOLY]
+    return Path(verts, codes)
+
+
+def sankey_static(run, classes, weight_cutoff=0.05, max_per_class=12,
+                  save_path=None, figsize=None, gap=0.015):
+    """Paper-style concept -> class flow diagram, drawn in matplotlib.
+
+    Same content as sankey() but with no plotly dependency and a static figure that
+    drops straight into a paper. Ribbon width is |w| from the sparse final layer;
+    red raises the class logit, blue lowers it, and negative weights are labelled
+    "NOT <concept>" following the paper's convention.
+
+    Concepts are ordered by the class they most influence, which keeps each class's
+    band contiguous and stops the ribbons crossing into an unreadable tangle.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+
+    if isinstance(classes, str):
+        classes = [classes]
+    for name in classes:
+        if name not in run.classes:
+            raise ValueError("{!r} not in classes; e.g. {}".format(name, run.classes[:5]))
+
+    final_weight = run.model.final.weight.detach().cpu()
+
+    edges = []   # (concept_label, class_position, |w|, is_positive)
+    for pos, class_name in enumerate(classes):
+        weights = final_weight[run.classes.index(class_name)]
+        keep = (weights.abs() > weight_cutoff).nonzero(as_tuple=True)[0]
+        keep = keep[torch.argsort(weights[keep].abs(), descending=True)]
+        if max_per_class:
+            keep = keep[:max_per_class]
+        for ci in keep.tolist():
+            w = weights[ci].item()
+            label = run.concepts[ci] if w > 0 else "NOT {}".format(run.concepts[ci])
+            edges.append((label, pos, abs(w), w > 0))
+
+    if not edges:
+        print("no concepts above |weight| > {}; lower weight_cutoff".format(weight_cutoff))
+        return None
+
+    concept_flow, concept_home = {}, {}
+    for label, pos, w, _ in edges:
+        concept_flow[label] = concept_flow.get(label, 0.0) + w
+        if w > concept_home.get(label, (None, -1.0))[1]:
+            concept_home[label] = (pos, w)
+    concept_labels = sorted(concept_flow,
+                            key=lambda l: (concept_home[l][0], -concept_flow[l]))
+
+    class_flow = {}
+    for _, pos, w, _ in edges:
+        class_flow[pos] = class_flow.get(pos, 0.0) + w
+
+    def _stack(keys, flows):
+        """Assign each node a [top, bottom] band, normalised to fill height 1."""
+        total = sum(flows[k] for k in keys)
+        span = 1.0 - gap * max(len(keys) - 1, 0)
+        spans, y = {}, 1.0
+        for k in keys:
+            h = span * flows[k] / total if total else 0.0
+            spans[k] = [y, y - h]
+            y -= h + gap
+        return spans
+
+    left = _stack(concept_labels, concept_flow)
+    right = _stack(list(range(len(classes))), class_flow)
+
+    if figsize is None:
+        figsize = (11, max(4.0, 0.34 * len(concept_labels)))
+    fig, ax = plt.subplots(figsize=figsize)
+
+    x_left, x_right, node_w = 0.30, 0.70, 0.012
+
+    # ribbons first so the node rectangles draw on top of their ends
+    left_cursor = {k: left[k][0] for k in left}
+    right_cursor = {k: right[k][0] for k in right}
+    for label, pos, w, positive in sorted(edges, key=lambda e: (concept_labels.index(e[0]))):
+        scale_l = (left[label][0] - left[label][1]) / concept_flow[label]
+        scale_r = (right[pos][0] - right[pos][1]) / class_flow[pos]
+        h_l, h_r = w * scale_l, w * scale_r
+        t0, b0 = left_cursor[label], left_cursor[label] - h_l
+        t1, b1 = right_cursor[pos], right_cursor[pos] - h_r
+        left_cursor[label], right_cursor[pos] = b0, b1
+        ax.add_patch(patches.PathPatch(
+            _flow_path(x_left + node_w, x_right, t0, b0, t1, b1),
+            facecolor="#d62728" if positive else "#1f77b4",
+            alpha=0.45, edgecolor="none"))
+
+    for label in concept_labels:
+        top, bot = left[label]
+        ax.add_patch(patches.Rectangle((x_left, bot), node_w, top - bot,
+                                       facecolor="#444444", edgecolor="none"))
+        ax.text(x_left - 0.012, (top + bot) / 2, label, ha="right", va="center", fontsize=9)
+
+    for pos, class_name in enumerate(classes):
+        top, bot = right[pos]
+        ax.add_patch(patches.Rectangle((x_right, bot), node_w, top - bot,
+                                       facecolor="#222222", edgecolor="none"))
+        ax.text(x_right + node_w + 0.012, (top + bot) / 2, class_name,
+                ha="left", va="center", fontsize=10, fontweight="bold")
+
+    ax.set_xlim(0, 1)
+    ax.set_ylim(-0.04, 1.04)
+    ax.axis("off")
+    ax.set_title("{} -- concept contributions (|w| > {})\nred: raises logit    blue: lowers logit"
+                 .format(run.name, weight_cutoff), fontsize=11)
+    plt.tight_layout()
+    if save_path:
+        _save_fig(fig, save_path, dpi=200)
+    plt.show()
+    return fig
+
+
+# ------------------------------------------------------------------- collages
+
+def _collage_image(run, raw_data, proc_data, idx, size=224):
+    """Undecoded image when available -- avoids showing the normalised, cropped tensor."""
+    try:
+        return np.asarray(raw_data[idx][0].convert("RGB").resize((size, size))) / 255.0
+    except Exception:
+        return _to_displayable(proc_data[idx][0], run.preprocess)
+
+
+def select_examples(results, mode="random", n=10, seed=0):
+    """Indices for one collage. Modes: random, confident_correct, confident_wrong."""
+    if mode == "random":
+        g = torch.Generator().manual_seed(seed)
+        return torch.randperm(len(results.labels), generator=g)[:n].tolist()
+
+    conf = results.confidence
+    if mode == "confident_correct":
+        pool = results.correct.nonzero(as_tuple=True)[0]
+    elif mode == "confident_wrong":
+        pool = (~results.correct).nonzero(as_tuple=True)[0]
+    else:
+        raise ValueError("mode must be random, confident_correct or confident_wrong")
+
+    if len(pool) == 0:
+        return []
+    order = torch.argsort(conf[pool], descending=True)
+    return pool[order][:n].tolist()
+
+
+def result_collage(run, results, mode="random", n=10, seed=0, ncols=5,
+                   save_path=None, title=None):
+    """Grid of example predictions, captioned with truth, prediction and confidence.
+
+    Green frame = correct, red = wrong, so a "confident_wrong" sheet reads as failures
+    at a glance without checking every caption.
+    """
+    import matplotlib.pyplot as plt
+
+    chosen = select_examples(results, mode=mode, n=n, seed=seed)
+    if not chosen:
+        print("no examples for mode={}".format(mode))
+        return None
+
+    raw_data = get_data(run, results.split, raw=True)
+    proc_data = get_data(run, results.split)
+    conf = results.confidence
+
+    nrows = int(np.ceil(len(chosen) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(2.7 * ncols, 3.3 * nrows))
+    axes = np.atleast_1d(axes).ravel()
+
+    for ax in axes[len(chosen):]:
+        ax.axis("off")
+
+    for ax, idx in zip(axes, chosen):
+        true_i, pred_i = int(results.labels[idx]), int(results.preds[idx])
+        ok = true_i == pred_i
+        ax.imshow(_collage_image(run, raw_data, proc_data, idx))
+        ax.set_xticks([]); ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#2ca02c" if ok else "#d62728")
+            spine.set_linewidth(3)
+        caption = "#{}  p={:.2f}\ntrue: {}".format(idx, conf[idx].item(), run.classes[true_i])
+        if not ok:
+            caption += "\npred: {}".format(run.classes[pred_i])
+        ax.set_title(caption, fontsize=7.5, color="#2ca02c" if ok else "#d62728")
+
+    fig.suptitle(title or "{} -- {} ({})".format(run.name, mode.replace("_", " "), results.split),
+                 fontsize=12)
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    if save_path:
+        _save_fig(fig, save_path, dpi=150)
+    plt.show()
+    return fig
+
+
+def save_collages(run, results, out_dir=None, n=10, seed=0):
+    """All three collages -- random, confidently correct, confidently wrong -- to disk."""
+    out_dir = out_dir or os.path.join(run.load_dir, "figures")
+    os.makedirs(out_dir, exist_ok=True)
+    paths = []
+    for mode in ("random", "confident_correct", "confident_wrong"):
+        path = os.path.join(out_dir, "collage_{}.png".format(mode))
+        result_collage(run, results, mode=mode, n=n, seed=seed, save_path=path)
+        paths.append(path)
+    return paths
+
+
+# ------------------------------------------------- per-class accuracy / confusion
+
+def per_class_accuracy(run, results):
+    """Per-class accuracy rows, worst first: class, accuracy, correct, support."""
+    labels, preds = results.labels.numpy(), results.preds.numpy()
+    rows = []
+    for ci, name in enumerate(run.classes):
+        mask = labels == ci
+        support = int(mask.sum())
+        if support == 0:
+            continue
+        n_correct = int((preds[mask] == ci).sum())
+        rows.append({"class": name, "class_idx": ci, "accuracy": n_correct / support,
+                     "correct": n_correct, "support": support})
+    rows.sort(key=lambda r: (r["accuracy"], -r["support"]))
+    return rows
+
+
+def _support_warning(rows):
+    """Birds525 ships ~5 val images per class, which makes per-class accuracy coarse."""
+    supports = sorted(r["support"] for r in rows)
+    median = supports[len(supports) // 2]
+    if median < 10:
+        print("NOTE: median support is {} images/class -- per-class accuracy can only take "
+              "{} distinct values, so 'worst classes' is noisy. Treat as a shortlist to "
+              "inspect, not a ranking.".format(median, median + 1))
+    return median
+
+
+def plot_class_accuracy(run, results, worst_k=25, save_path=None):
+    """Distribution of per-class accuracy, plus the worst-k classes by name."""
+    import matplotlib.pyplot as plt
+
+    rows = per_class_accuracy(run, results)
+    _support_warning(rows)
+    worst = rows[:worst_k]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, max(5, 0.32 * worst_k)),
+                                   gridspec_kw={"width_ratios": [1, 1.5]})
+
+    accs = [r["accuracy"] for r in rows]
+    ax1.hist(accs, bins=20, color="#4c72b0", edgecolor="white")
+    ax1.axvline(results.accuracy, color="#d62728", ls="--",
+                label="overall {:.1f}%".format(results.accuracy * 100))
+    ax1.set_xlabel("per-class accuracy"); ax1.set_ylabel("classes")
+    ax1.set_title("distribution over {} classes".format(len(rows)))
+    ax1.legend(fontsize=8)
+
+    ypos = range(len(worst))[::-1]
+    ax2.barh(list(ypos), [r["accuracy"] for r in worst], color="#d62728")
+    ax2.set_yticks(list(ypos))
+    ax2.set_yticklabels(["{} ({}/{})".format(r["class"], r["correct"], r["support"])
+                         for r in worst], fontsize=7.5)
+    ax2.set_xlabel("accuracy"); ax2.set_xlim(0, 1)
+    ax2.set_title("worst {} classes".format(len(worst)))
+
+    fig.suptitle("{} -- per-class accuracy ({})".format(run.name, results.split), fontsize=12)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    if save_path:
+        _save_fig(fig, save_path, dpi=150)
+    plt.show()
+    return rows
+
+
+def confused_pairs(run, results, k=20):
+    """Most frequent (true -> predicted) mistakes, as a list of dicts."""
+    import collections
+    counts = collections.Counter(
+        (int(t), int(p)) for t, p in zip(results.labels, results.preds) if t != p)
+    return [{"true": run.classes[t], "pred": run.classes[p], "count": n}
+            for (t, p), n in counts.most_common(k)]
+
+
+def plot_confusion(run, results, worst_k=25, save_path=None, annotate=True):
+    """Confusion submatrix over the worst-k classes and whatever they get mistaken for.
+
+    The full matrix is 525x525 and unreadable, and with ~5 images per class it is
+    almost entirely zeros -- so this restricts rows to the classes that actually fail
+    and columns to the predictions they actually receive.
+    """
+    import matplotlib.pyplot as plt
+
+    rows = per_class_accuracy(run, results)
+    _support_warning(rows)
+    worst = rows[:worst_k]
+    row_idx = [r["class_idx"] for r in worst]
+
+    labels, preds = results.labels.numpy(), results.preds.numpy()
+    col_counts = {}
+    for ci in row_idx:
+        for p in preds[labels == ci]:
+            col_counts[int(p)] = col_counts.get(int(p), 0) + 1
+    keep = sorted(col_counts, key=lambda c: -col_counts[c])[:worst_k + 10]
+    col_idx = sorted(set(keep) | set(row_idx), key=lambda c: run.classes[c])
+    col_pos = {c: j for j, c in enumerate(col_idx)}
+
+    # capping the columns can exclude a rare prediction one of these rows actually made;
+    # bucket those into a trailing column so every row still sums to its support
+    spill = sum(1 for ci in row_idx for p in preds[labels == ci] if int(p) not in col_pos)
+    mat = np.zeros((len(row_idx), len(col_idx) + (1 if spill else 0)), dtype=int)
+    for i, ci in enumerate(row_idx):
+        for p in preds[labels == ci]:
+            mat[i, col_pos.get(int(p), len(col_idx))] += 1
+
+    col_names = [run.classes[c] for c in col_idx] + (["(other)"] if spill else [])
+    fig, ax = plt.subplots(figsize=(max(8, 0.42 * len(col_names)), max(6, 0.36 * len(row_idx))))
+    im = ax.imshow(mat, cmap="Reds", aspect="auto")
+    fig.colorbar(im, ax=ax, label="images", fraction=0.025)
+
+    ax.set_xticks(range(len(col_names)))
+    ax.set_xticklabels(col_names, rotation=90, fontsize=7)
+    ax.set_yticks(range(len(row_idx)))
+    ax.set_yticklabels(["{} ({}/{})".format(r["class"], r["correct"], r["support"])
+                        for r in worst], fontsize=7)
+    ax.set_xlabel("predicted"); ax.set_ylabel("true (worst classes)")
+
+    # mark the diagonal so correct predictions are distinguishable from confusions
+    for i, ci in enumerate(row_idx):
+        if ci in col_pos:
+            ax.add_patch(plt.Rectangle((col_pos[ci] - 0.5, i - 0.5), 1, 1,
+                                       fill=False, edgecolor="#2ca02c", lw=1.6))
+    if annotate:
+        for i in range(mat.shape[0]):
+            for j in range(mat.shape[1]):
+                if mat[i, j]:
+                    ax.text(j, i, mat[i, j], ha="center", va="center", fontsize=6.5,
+                            color="white" if mat[i, j] > mat.max() * 0.6 else "black")
+
+    ax.set_title("{} -- confusions for the {} weakest classes ({})\n"
+                 "green box = correct cell".format(run.name, len(row_idx), results.split),
+                 fontsize=11)
+    plt.tight_layout()
+    if save_path:
+        _save_fig(fig, save_path, dpi=150)
+    plt.show()
+    return mat

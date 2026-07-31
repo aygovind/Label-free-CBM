@@ -124,3 +124,17 @@ spec:
                       # but no tensor cores, which would cost more than the queue wait.
                       - NVIDIA-L4
                       - Tesla-V100-SXM2-32GB
+                      # widened again: everything Turing-or-newer with >=16GB.
+                      # Pascal/Maxwell (1080-Ti, TITAN-Xp, GTX-1080, M4000, T4,
+                      # TITAN-X-Pascal) still excluded -- ~97 more GPUs, but no
+                      # tensor cores, so runs would slow from ~4.5h to ~8h+.
+                      - NVIDIA-RTX-A4000
+                      - Tesla-V100-SXM2-16GB
+                      - NVIDIA-L40
+                      - NVIDIA-L40S
+                      - NVIDIA-RTX-5000-Ada-Generation
+                      - Tesla-V100-PCIE-16GB
+                      - NVIDIA-TITAN-RTX
+                      - NVIDIA-RTX-A5000
+                      - Quadro-RTX-6000
+                      - NVIDIA-RTX-4000-Ada-Generation
