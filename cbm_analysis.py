@@ -540,6 +540,8 @@ def _collage_image(run, raw_data, proc_data, idx, size=224):
     try:
         return np.asarray(raw_data[idx][0].convert("RGB").resize((size, size))) / 255.0
     except Exception:
+        if proc_data is None or run is None:
+            raise
         return _to_displayable(proc_data[idx][0], run.preprocess)
 
 
@@ -758,3 +760,224 @@ def plot_confusion(run, results, worst_k=25, save_path=None, annotate=True):
         _save_fig(fig, save_path, dpi=150)
     plt.show()
     return mat
+
+
+# ------------------------------------------------- cross-model qualitative figure
+
+class ModelOutputs:
+    """One run's predictions, retained after the model itself has been released.
+
+    evaluate_many() builds these so several runs can be compared without five
+    backbones resident on the GPU at once.
+    """
+
+    def __init__(self, name, backbone, dataset, classes, concepts, final_weight,
+                 preds, labels, logits, concept_acts=None):
+        self.name = name
+        self.backbone = backbone
+        self.dataset = dataset
+        self.classes = classes
+        self.concepts = concepts
+        self.final_weight = final_weight
+        self.preds = preds
+        self.labels = labels
+        self.logits = logits
+        self.concept_acts = concept_acts
+
+    @property
+    def accuracy(self):
+        return (self.preds == self.labels).float().mean().item()
+
+    @property
+    def correct(self):
+        return self.preds == self.labels
+
+    @property
+    def confidence(self):
+        return torch.softmax(self.logits, dim=1).max(dim=1).values
+
+    def top_concepts(self, idx, k=2):
+        """Highest-magnitude concept contributions for one example's prediction."""
+        if self.concept_acts is None:
+            return []
+        weights = self.final_weight[int(self.preds[idx])]
+        contrib = self.concept_acts[idx] * weights
+        order = torch.argsort(contrib.abs(), descending=True)[:k]
+        return [("" if contrib[i] >= 0 else "NOT ") + self.concepts[i] for i in order]
+
+    def __repr__(self):
+        return "<ModelOutputs {} acc={:.4f}>".format(self.name, self.accuracy)
+
+
+def evaluate_many(load_dirs, split="val", device=None, batch_size=256,
+                  keep_concept_acts=False):
+    """Evaluate several runs in turn, freeing each backbone before loading the next.
+
+    Five ViT-B/16 backbones will not fit comfortably on an 11GB card together, so only
+    predictions and the final-layer weights are kept. Pass keep_concept_acts=True if you
+    want per-example concept attributions (~20MB per run on birds525).
+    """
+    outs = []
+    for d in load_dirs:
+        run = load_run(d, device)
+        res = evaluate(run, split=split, batch_size=batch_size)
+        outs.append(ModelOutputs(
+            run.name, run.backbone, run.dataset, run.classes, run.concepts,
+            run.model.final.weight.detach().cpu(),
+            res.preds, res.labels, res.logits,
+            res.concept_acts if keep_concept_acts else None))
+        print("  {:42s} acc {:.2f}%".format(run.name, outs[-1].accuracy * 100))
+        del res, run
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    return outs
+
+
+def _pick(outs, name):
+    for o in outs:
+        if o.name == name or o.backbone == name:
+            return o
+    raise ValueError("{!r} matched no run; have {}".format(
+        name, [o.name for o in outs]))
+
+
+def story_examples(outs, strong=None, domain=None):
+    """One representative index per narrative mode, plus how many images qualify.
+
+    Candidates are ranked so the chosen image makes the point vividly -- for the
+    "wins" modes that means both models were confident, not marginal.
+    """
+    ranked = sorted(outs, key=lambda o: -o.accuracy)
+    domain_o = (_pick(outs, domain) if domain else
+                next((o for o in outs if o.backbone == "bioclip"), ranked[-1]))
+    # strong must differ from domain, or both "wins" rows are empty by construction
+    # -- which happens whenever the domain model is also the most accurate one
+    strong_o = (_pick(outs, strong) if strong else
+                next(o for o in ranked if o is not domain_o))
+    if strong_o is domain_o:
+        raise ValueError("strong and domain resolved to the same run ({}); "
+                         "pass them explicitly".format(strong_o.name))
+
+    preds = torch.stack([o.preds for o in outs])
+    correct = torch.stack([o.correct for o in outs])
+    conf = torch.stack([o.confidence for o in outs])
+    n = preds.shape[1]
+
+    n_distinct = torch.tensor([len(set(preds[:, i].tolist())) for i in range(n)])
+    s_ok, d_ok = strong_o.correct, domain_o.correct
+    s_conf, d_conf = strong_o.confidence, domain_o.confidence
+
+    modes = {
+        "max_disagreement": (n_distinct >= 2, n_distinct.float() + conf.mean(0)),
+        "strong_wins": (s_ok & ~d_ok, s_conf + d_conf),
+        "domain_wins": (d_ok & ~s_ok, s_conf + d_conf),
+        "unanimous_failure": (~correct.any(0), conf.mean(0)),
+    }
+
+    out = {}
+    for mode, (mask, score) in modes.items():
+        pool = mask.nonzero(as_tuple=True)[0]
+        if len(pool) == 0:
+            out[mode] = {"index": None, "count": 0}
+        else:
+            best = pool[torch.argmax(score[pool])].item()
+            out[mode] = {"index": best, "count": int(len(pool))}
+    out["_strong"], out["_domain"] = strong_o.name, domain_o.name
+    return out
+
+
+def story_figure(outs, split="val", strong=None, domain=None, top_concepts=0,
+                 save_path=None, run_for_images=None, wrap=16):
+    """Single figure: four narrative rows, each one image judged by every model.
+
+    Rows are max disagreement, the strong model winning, the domain model winning, and
+    everything failing. Both "wins" rows are shown deliberately -- a figure containing
+    only the cases your preferred model wins reads as cherry-picking.
+    """
+    import textwrap
+    import matplotlib.pyplot as plt
+    from matplotlib import gridspec
+
+    picks = story_examples(outs, strong=strong, domain=domain)
+    strong_name, domain_name = picks.pop("_strong"), picks.pop("_domain")
+
+    order = ["max_disagreement", "strong_wins", "domain_wins", "unanimous_failure"]
+    titles = {
+        "max_disagreement": "models disagree most",
+        "strong_wins": "{} right, {} wrong".format(_short(strong_name), _short(domain_name)),
+        "domain_wins": "{} right, {} wrong".format(_short(domain_name), _short(strong_name)),
+        "unanimous_failure": "every model wrong",
+    }
+    rows = [m for m in order if picks[m]["index"] is not None]
+    if not rows:
+        print("no qualifying examples in any mode")
+        return None
+
+    if run_for_images is not None:
+        raw_data = get_data(run_for_images, split, raw=True)
+        proc_data = get_data(run_for_images, split)
+    else:
+        import torchvision.transforms as T
+        raw_data = data_utils.get_data("{}_{}".format(outs[0].dataset, split),
+                                       preprocess=T.Lambda(lambda x: x))
+        proc_data = None
+
+    n_col = len(outs) + 1
+    fig = plt.figure(figsize=(2.05 * n_col + 1.6, 2.75 * len(rows)))
+    gs = gridspec.GridSpec(len(rows), n_col, figure=fig,
+                           width_ratios=[1.25] + [1] * len(outs),
+                           hspace=0.32, wspace=0.12)
+
+    for r, mode in enumerate(rows):
+        idx = picks[mode]["index"]
+        truth = int(outs[0].labels[idx])
+
+        ax = fig.add_subplot(gs[r, 0])
+        ax.imshow(_collage_image(run_for_images, raw_data, proc_data, idx))
+        ax.set_xticks([]); ax.set_yticks([])
+        for s in ax.spines.values():
+            s.set_edgecolor("#333333"); s.set_linewidth(1.2)
+        ax.set_ylabel("{}\n({} imgs)".format(titles[mode], picks[mode]["count"]),
+                      fontsize=8.5, fontweight="bold", labelpad=8)
+        ax.set_title("#{}  truth:\n{}".format(
+            idx, "\n".join(textwrap.wrap(outs[0].classes[truth], wrap))), fontsize=7.5)
+
+        for c, o in enumerate(outs):
+            cell = fig.add_subplot(gs[r, c + 1])
+            cell.set_xticks([]); cell.set_yticks([])
+            ok = bool(o.correct[idx])
+            cell.set_facecolor("#e8f5e9" if ok else "#ffebee")
+            for s in cell.spines.values():
+                s.set_edgecolor("#2ca02c" if ok else "#d62728"); s.set_linewidth(1.8)
+
+            if r == 0:
+                cell.set_title("{}\n{:.1f}%".format(_short(o.name), o.accuracy * 100),
+                               fontsize=8.5, fontweight="bold")
+
+            body = "\n".join(textwrap.wrap(o.classes[int(o.preds[idx])], wrap))
+            cell.text(0.5, 0.80, "OK" if ok else "X", ha="center", va="top",
+                      fontsize=11, fontweight="bold",
+                      color="#2ca02c" if ok else "#d62728", transform=cell.transAxes)
+            cell.text(0.5, 0.62, body, ha="center", va="top", fontsize=7.2,
+                      transform=cell.transAxes)
+            cell.text(0.5, 0.06, "p={:.2f}".format(o.confidence[idx]), ha="center",
+                      va="bottom", fontsize=7, color="#555555", transform=cell.transAxes)
+            if top_concepts:
+                cs = o.top_concepts(idx, k=top_concepts)
+                if cs:
+                    cell.text(0.5, 0.20, "\n".join(textwrap.wrap(", ".join(cs), 22)),
+                              ha="center", va="bottom", fontsize=5.8, style="italic",
+                              color="#444444", transform=cell.transAxes)
+
+    fig.suptitle("Qualitative comparison on {} -- one image per failure mode".format(split),
+                 fontsize=12, y=0.995)
+    if save_path:
+        _save_fig(fig, save_path, dpi=200)
+    plt.show()
+    return fig
+
+
+def _short(name):
+    """Compact run name for column headers."""
+    return (name.replace("_birds525", "").replace("birds525_", "")
+                .replace("__lam", " lam").replace("_vitb_concepts", "+vitbC"))
